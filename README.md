@@ -4,6 +4,17 @@
 
 **PmAgent - Team Pulse** is an AI-powered project coordination dashboard designed for Agile/Kanban teams. It bridges the gap between raw issue-tracking data (Jira) and actionable, flow-based project management. Powered by a [LangGraph Deep Agent](https://docs.langchain.com/oss/python/deepagents/overview), it leverages **Actionable Agile** metrics (as defined by Daniel Vacanti) and Kanban University principles to provide real-time sprint health, throughput forecasting, and blocker detection.
 
+## 🏆 Hackathon Submission
+
+**Track:** Kill the Dashboard  
+**Premise:** *Would this have been impossible with a chat interface? Yes.*
+
+This project was built for the **Generative UI Global Hackathon**. It rigorously follows the rubric criteria:
+
+*   **Generative UI First (Kill the Dashboard):** We eliminated static reporting pages. Instead of a user navigating through filters, the CopilotKit orchestrator listens to natural language ("How is the sprint going?"), talks to the LangGraph agent, and dynamically **mutates the React global state** to swap the main canvas from a tactical Kanban board into a high-density, interactive Analytics Dashboard rendered on the fly.
+*   **Innovation & Complexity:** We didn't just build a chatbot wrapper for an API. The backend Python engine actively computes complex Kanban flow metrics (E85/E90 Throughput confidence intervals) and runs multi-thousand iteration **Monte Carlo simulations** to forecast delivery dates based on historical data. 
+*   **Real-World Impact:** PMs and Scrum Masters currently rely on expensive, rigid third-party Jira plugins (like ActionableAgile) to get these metrics. **PmAgent** democratizes flow analytics by generating the exact data visualization a team needs, precisely when they ask for it.
+
 ## 🚀 Core Features
 
 - **Instant Jira Hydration:** Connects directly to your Jira SCRUM/Kanban projects to fetch real-time issue states. No manual CSV exports required.
