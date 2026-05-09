@@ -1,51 +1,32 @@
-# Generative UI Global Hackathon: Agentic Interfaces Starter Kit
+# PmAgent - Team Pulse
 
-![Hackathon Banner](apps/frontend/public/banner.jpg)
+![Team Pulse Banner](apps/frontend/public/banner.jpg)
 
-Welcome to the **Generative UI Global Hackathon: Agentic Interfaces**! This starter kit gives you a complete AI-powered application with durable conversation threads, an agent-driven canvas, real-world MCP integrations, and a deployable MCP App — wired up with CopilotKit, LangChain Deep Agents, Gemini, A2UI, Notion MCP (via mcp-use), Manufact, and Daytona.
+**PmAgent - Team Pulse** is an AI-powered project coordination dashboard designed for Agile/Kanban teams. It bridges the gap between raw issue-tracking data (Jira) and actionable, flow-based project management. Powered by a [LangGraph Deep Agent](https://docs.langchain.com/oss/python/deepagents/overview), it leverages **Actionable Agile** metrics (as defined by Daniel Vacanti) and Kanban University principles to provide real-time sprint health, throughput forecasting, and blocker detection.
 
-## About this starter
+## Core Features
 
-https://github.com/user-attachments/assets/f2a405c3-3cf4-44c8-bca3-2c8b8e6fed90
-
-This is a starter template for building agentic interfaces using Generative UI. It provides a modern Next.js application with an integrated [LangGraph Deep Agent](https://docs.langchain.com/oss/python/deepagents/overview) that manages a visual canvas of interactive cards with real-time AI synchronization and external tool integrations (a Notion "Leads" database, for this example) through MCP. A second deployable MCP server, built on mcp-use, gives the agent a third surface that runs natively in Claude or ChatGPT.
-
-This is an example application that we built to help you get started quickly. Everything you see can be customized, replaced, augmented, or built upon.
-
-https://github.com/user-attachments/assets/6f44cf84-e485-4c26-8703-481e0c9c2c54
-
-- **Persistent threads.** Every conversation is named, listed in the sidebar, and survives reloads, restarts, and resumes mid-run.
-- **Agent-driven canvas.** Lead cards, follow-up notes, and pipeline charts the AI can create, edit, and organize while you watch.
-- **Real integrations via MCP.** Notion Leads database sync out of the box; swap to any other MCP server with one config edit.
-- **Deployable MCP server.** A third agent surface that runs in Claude or ChatGPT, deployable with one command.
-- **Generative UI primed.** Stream Gemini-rendered components without re-plumbing.
+- **Instant Jira Hydration:** Connects directly to your Jira SCRUM/Kanban projects to fetch real-time issue states. No manual exports required.
+- **Agent-Driven Flow Analytics:** The integrated LangGraph agent autonomously calculates and renders:
+  - **Cycle Time Scatterplots:** Spot aging work items instantly.
+  - **Daily Throughput Tracking:** With 85th and 90th percentile confidence markers (E85/E90).
+  - **Monte Carlo Simulations:** Predictive forecasting (P50, P85, P95) for remaining sprint backlog.
+- **Actionable Agile Insights:** The "Como Van?" assistant proactively identifies blockers, aging tickets, and WIP limit violations, suggesting remedies based on Little's Law.
+- **Persistent Threads:** Backed by CopilotKit Intelligence, conversations survive reloads and session drops.
 
 ---
 
-## Generative UI
+## Architecture Stack
 
-![Generative UI spectrum: Controlled → Declarative → Open-ended](apps/frontend/public/generative-ui-spectrum-v2.jpg)
+### Backend / Intelligence
+- **LangGraph Deep Agents (Python):** Orchestrates the data fetching, mathematical modeling (Monte Carlo, percentiles), and state mutation.
+- **Gemini 3.1 Flash-Lite:** The cognitive engine driving the agent's analysis and natural language generation.
+- **Atlassian REST API:** Direct data ingestion pipeline for Jira issues and changelogs.
 
-"Generative UI" describes any AI-driven interface that the agent **chooses, composes, or writes at runtime**. Approaches sit on a spectrum — from **more control** on one end to **more flexibility** on the other — and most real apps mix several tiers.
-
-### Controlled (`useComponent`)
-
-The highest level of control. The developer provides the agent with a set of predefined React components, and the agent selects the appropriate one and populates it with props. This ensures the interface stays on-brand and pixel-perfect, making it ideal for standard, repeatable application workflows. See [Display Components](https://docs.copilotkit.ai/generative-ui/your-components/display-only) in the CopilotKit docs.
-
-### Declarative (`A2UI`)
-
-Utilizing the [A2UI](https://a2ui.org/) specification, this method uses a schema to map agent outputs to a catalog of renderers. It offers a balance between control and flexibility, allowing the agent to handle more varied UI layouts without requiring a unique tool for every single component. It is particularly effective for the "long tail" of user interactions. See [A2UI](https://docs.copilotkit.ai/generative-ui/a2ui) in the CopilotKit docs.
-
-### Open-ended (`MCP Apps`, `openGenerativeUI`)
-
-The "Wild West" of generative UI — the agent generates raw HTML that is rendered within a secure, sandboxed double-iframe. While it is the most flexible — enabling the creation of disposable, data-grounded interfaces on the fly — it is the hardest to style consistently and can behave unpredictably. See [opengenerativeui.copilotkit.ai](https://opengenerativeui.copilotkit.ai/) for a live demo, and the CopilotKit docs on [MCP Apps](https://docs.copilotkit.ai/generative-ui/mcp-apps) and [Open Generative UI](https://docs.copilotkit.ai/generative-ui/open-generative-ui).
-
-This kit is wired for all three: the canvas surface uses controlled cards for lead entities, A2UI streams declarative components from Gemini, and the deployable MCP server in `apps/mcp/` extends the same agent into Claude and ChatGPT's open-ended generative UI surface.
-
-**Go deeper:**
-
-- 🎥 Talk — [The Generative UI spectrum](https://www.youtube.com/watch?v=y4lln0yGMSE)
-- 📝 Article — [CopilotKit on Generative UI](https://x.com/CopilotKit/status/2047327612163293286)
+### Frontend
+- **Next.js (App Router):** Fast, server-rendered React application.
+- **CopilotKit:** Bridges the LangGraph backend to the React frontend, handling state synchronization, tool-call streaming, and UI component rendering (`<AnalyticsDashboard />`).
+- **Recharts & TailwindCSS:** Used to build the expansive, data-dense "Team Analytics & Flow Metrics" view in the main canvas.
 
 ---
 
@@ -98,53 +79,36 @@ The kit's `apps/mcp/` package is an MCP server built with [`mcp-use`](https://ma
 ## Run it locally
 
 1. Run `npx @copilotkit/cli@latest init` and select **Intelligence** when prompted.
-2. Drop a Gemini API key into **both** `.env` and `apps/agent/.env`. Then follow [Notion setup](#notion-setup) below for the integration token + database id.
-3. Run `npm install` then `npm run dev` (or `npm run dev:full` to include the MCP server).
+2. Drop a Gemini API key into **both** `.env` and `apps/agent/.env`. 
+3. Follow the [Jira Setup](#jira-setup) below for the Atlassian credentials.
+4. Run `npm install` then `npm run dev:no-docker`.
 
-> `npm run dev` runs a pre-flight check (`scripts/check-env.sh`) before booting anything — it'll fail loudly with a numbered list of any missing keys, an unreachable Notion database, or a Docker daemon that isn't running. Fix what it lists, re-run, and you're off. See [dev-docs/troubleshooting.md](dev-docs/troubleshooting.md) for fixes per failure mode.
+> `npm run dev:no-docker` boots the Next.js UI, the Node.js BFF, and the Python LangGraph server simultaneously. 
 
 Please give us feedback on your experience with it!
 
-### Notion setup
+### Jira Setup
 
-The kit calls Notion through the official [Notion MCP server](https://github.com/makenotion/notion-mcp-server) — a standalone process spawned on demand via `npx -y @notionhq/notion-mcp-server`. Auth is a single Notion integration token plus an explicit per-database share. No global install, no OAuth flow, no third-party broker.
+PmAgent connects directly to Jira via its REST API (no complex MCP configuration required). Auth is done via a standard Atlassian API Token.
 
-The kit is wired against an "AI Workshop Provider Community" lead-form database. The fastest path is to duplicate the public sample into your own workspace; you can also re-import a CSV/ZIP if you'd rather start from a snapshot.
+**1. Generate an Atlassian API Token**
+1. Go to your [Atlassian Account Security](https://id.atlassian.com/manage-profile/security/api-tokens) page.
+2. Click **Create API token**, name it (e.g. "PmAgent"), and copy the token.
 
-**1. Get the database into your workspace.**
-
-- *Option A — duplicate the public sample (recommended).* Open the public template: [AI Workshop Provider Community](https://assorted-stomach-b12.notion.site/a274791c4e1e826d882d01562af74de9?v=0e04791c4e1e83ca834988083174d19e&source=copy_link). In the top-right of the page, click the **Duplicate** icon (two overlapping squares, next to the share icon and the `…` menu) and pick a destination workspace — schema, views, and seed rows all come along. Bookmark the URL of the duplicated copy; you'll need its database id in step 3.
-- *Option B — re-import the bundled snapshot.* In Notion, **Settings → Workspace → Import → Notion (CSV/ZIP)** and upload [`data/notion-leads-sample/ai-workshop-provider-community.zip`](data/notion-leads-sample/ai-workshop-provider-community.zip). A quick-look CSV lives next to it at [`ai-workshop-provider-community.csv`](data/notion-leads-sample/ai-workshop-provider-community.csv).
-
-**2. Create an integration and share it with the database.**
-
-1. Go to [notion.so/profile/integrations/internal](https://www.notion.so/profile/integrations/internal) → **New integration** → name it (e.g. "genai-starterkit") → copy the **Internal Integration Token** (starts with `ntn_…` or `secret_…`). Bookmark this page — it's also where you'll come back to rotate the token or audit which databases the integration can see.
-2. Open the duplicated database in Notion. Click the `…` menu in the top-right → **Connections** (count badge will read `0`) → **Add connection** → pick the integration you just created. The panel will flip to **Active connections** with your integration listed.
-
-> Notion's permission model is per-database — a fresh integration token sees zero databases until it's been shared into them. **Forgetting this share step is the most common point of failure.** If `npm run dev` boots cleanly but `Import the leads` fails with "object not found", come back here.
-
-> **Learn more:** Notion's [Getting started with the Notion API](https://developers.notion.com/guides/get-started/overview) covers integration types, the per-database share model, and the API surface the official MCP server wraps.
-
-**3. Paste the credentials into `.env`.**
-
-Pull the database id from the URL of your duplicated copy: it's the 32-char hex string between the workspace slug and the `?v=` query (e.g. `a274791c4e1e826d882d01562af74de9`).
-
-Paste both into `apps/agent/.env` (and `.env` at the repo root):
+**2. Configure the Environment**
+Open `apps/agent/.env` (and `.env` at the root) and set your credentials:
 
 ```bash
-NOTION_TOKEN=<paste the Internal Integration Token>
-NOTION_LEADS_DATABASE_ID=<paste the database id from its Notion URL>
+JIRA_URL="https://your-domain.atlassian.net"
+JIRA_EMAIL="your.email@example.com"
+JIRA_API_TOKEN="<paste the API token here>"
 ```
 
-**4. Restart the agent.**
-
+**3. Start the Project**
 ```bash
-npm run dev
+npm run dev:no-docker
 ```
-
-Then try: **"Import the workshop leads."**
-
-> Need the manual / Docker-free path, or want to swap Notion for a different MCP server (Linear, Slack, GitHub, …)? See [dev-docs/setup.md](dev-docs/setup.md).
+On boot, the LangGraph agent will automatically fetch the latest 30 active/completed issues from the `SCRUM` project and render the analytics dashboard instantly.
 
 ---
 
