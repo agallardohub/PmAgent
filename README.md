@@ -29,9 +29,7 @@ graph TD
     
     CK -->|LangGraph Protocol| BFF[Node.js BFF Gateway]
     BFF -->|Remote Graph Invocation| Agent[Python LangGraph Deep Agent]
-    
-    Agent <-->|REST API (Issues & Changelogs)| Jira[Atlassian Jira Cloud]
-    
+    Agent -->|REST API Requests and JSON| Jira[Atlassian Jira Cloud]
     Agent -->|State Mutation (Command)| BFF
     BFF -->|State Sync| CK
     
