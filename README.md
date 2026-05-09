@@ -20,11 +20,20 @@
 
 ```mermaid
 graph TD
-    Client[Next.js Frontend Client] -->|CopilotKit Protocol| BFF[Node.js BFF Express Server]
-    Client -->|React State| UI[Tailwind + Recharts UI]
-    BFF -->|Remote Graph Invocation| Agent[Python LangGraph Server]
-    Agent -->|REST HTTP| Jira[Atlassian Jira Cloud API]
-    Agent -.->|Generative UI State Mutation| Client
+    User((User)) -->|Prompt / Action| UI[Next.js Frontend]
+    UI -->|React Context| CK[CopilotKit Orchestrator]
+    
+    CK -->|LangGraph Protocol| BFF[Node.js BFF Gateway]
+    BFF -->|Remote Graph Invocation| Agent[Python LangGraph Deep Agent]
+    
+    Agent <-->|REST API (Issues & Changelogs)| Jira[Atlassian Jira Cloud]
+    
+    Agent -->|State Mutation (Command)| BFF
+    BFF -->|State Sync| CK
+    
+    CK -->|Generates UI Dynamically| Canvas{Main View Canvas}
+    Canvas -->|view="board"| PB[PipelineBoard Component]
+    Canvas -->|view="analytics"| AD[AnalyticsDashboard Component]
 ```
 
 ### Backend / Intelligence
