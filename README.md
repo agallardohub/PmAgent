@@ -24,18 +24,18 @@ The architecture is built heavily on the principles of **Generative UI**, where 
 
 ```mermaid
 graph TD
-    User((User)) -->|Prompt / Action| UI[Next.js Frontend]
+    User((User)) -->|Prompt| UI[Next.js Frontend]
     UI -->|React Context| CK[CopilotKit Orchestrator]
     
     CK -->|LangGraph Protocol| BFF[Node.js BFF Gateway]
     BFF -->|Remote Graph Invocation| Agent[Python LangGraph Deep Agent]
-    Agent -->|REST API Requests and JSON| Jira[Atlassian Jira Cloud]
-    Agent -->|State Mutation (Command)| BFF
+    Agent -->|REST API Requests| Jira[Atlassian Jira Cloud]
+    Agent -->|State Mutation Command| BFF
     BFF -->|State Sync| CK
     
     CK -->|Generates UI Dynamically| Canvas{Main View Canvas}
-    Canvas -->|view="board"| PB[PipelineBoard Component]
-    Canvas -->|view="analytics"| AD[AnalyticsDashboard Component]
+    Canvas -->|View is Board| PB[PipelineBoard Component]
+    Canvas -->|View is Analytics| AD[AnalyticsDashboard Component]
 ```
 
 ### Flow Analytics Execution
