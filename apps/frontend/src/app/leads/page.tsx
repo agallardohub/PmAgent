@@ -1,0 +1,679 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { z } from "zod";
+import { Activity, ExternalLink, Tag, User } from "lucide-react";
+import { Toaster, toast } from "sonner";
+import {
+  CopilotChatConfigurationProvider,
+  CopilotSidebar,
+  useAgent,
+  useConfigureSuggestions,
+  useCopilotKit,
+  useDefaultRenderTool,
+  useFrontendTool,
+} from "@copilotkit/react-core/v2";
+import { ThreadsDrawer } from "@/components/threads-drawer";
+import drawerStyles from "@/components/threads-drawer/threads-drawer.module.css";
+
+import type { AgentState, Issue, IssueFilter } from "@/lib/leads/types";
+import { initialState, emptyFilter } from "@/lib/leads/state";
+import { applyFilter } from "@/lib/leads/derive";
+import { applyPatch, revertPatch } from "@/lib/leads/optimistic";
+
+import { Header } from "@/components/leads/Header";
+import { PipelineBoard } from "@/components/leads/PipelineBoard";
+import { QuickStats } from "@/components/leads/QuickStats";
+import { ToolFallbackCard } from "@/components/copilot/ToolFallbackCard";
+import { AnalyticsDashboard } from "@/components/copilot/AnalyticsDashboard";
+
+function ClientOnly({ children }: { children: React.ReactNode }) {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  if (!mounted) return null;
+  return <>{children}</>;
+}
+
+const issueShape = z.object({
+  id: z.string(),
+  url: z.string().optional(),
+  summary: z.string(),
+  description: z.string().default(""),
+  status: z.string().default("To Do"),
+  assignee: z.string().default("Unassigned"),
+  priority: z.string().default("Medium"),
+  type: z.string().default("Task"),
+  updated: z.string().default(""),
+});
+
+// Merge raw agent state into the canonical AgentState shape so consumers can
+// rely on every nested field existing (filter, header, sync, etc.).
+function mergeAgentState(raw: unknown): AgentState {
+  const partial =
+    raw && typeof raw === "object" ? (raw as Partial<AgentState>) : {};
+  return {
+    ...initialState,
+    ...partial,
+    filter: { ...initialState.filter, ...(partial.filter ?? {}) },
+    header: { ...initialState.header, ...(partial.header ?? {}) },
+    sync: { ...initialState.sync, ...(partial.sync ?? {}) },
+    leads: partial.leads ?? initialState.leads,
+    highlightedIssueIds:
+      partial.highlightedIssueIds ?? initialState.highlightedIssueIds,
+  };
+}
+
+// v2 `useFrontendTool({ render })` registers the closure once and never
+// updates it, so any render that captures `agent.state` directly is stuck
+// with the first-mount value. The fix: keep registered renderers as
+// `() => <LiveX />` factories and have the wrapper subscribe to agent state
+// itself via `useAgent()`. `useAgent` re-renders on `OnStateChanged`, giving
+// us fresh state each time without closure capture.
+function useLiveAgentState() {
+  const { agent } = useAgent();
+  const state = mergeAgentState(agent?.state);
+  const setState = (updater: (prev: AgentState) => AgentState) => {
+    agent?.setState(updater(mergeAgentState(agent?.state)));
+  };
+  return { agent, state, setState };
+}
+
+function LiveWorkshopDemand() {
+  const { state, setState } = useLiveAgentState();
+  return (
+    <div className="my-2">
+      <WorkshopDemand
+        leads={state.leads}
+        selectedWorkshops={state.filter.workshops}
+        compact
+        onPickWorkshop={(w) =>
+          setState((prev) => {
+            const has = prev.filter.workshops.includes(w);
+            return {
+              ...prev,
+              filter: {
+                ...prev.filter,
+                workshops: has
+                  ? prev.filter.workshops.filter((x) => x !== w)
+                  : [...prev.filter.workshops, w],
+              },
+            };
+          })
+        }
+      />
+    </div>
+  );
+}
+
+function CanvasInner() {
+  const { agent } = useAgent();
+  const { copilotkit } = useCopilotKit();
+
+  useConfigureSuggestions({
+    available: "before-first-message",
+    suggestions: [
+      {
+        title: "Import from Jira",
+        message: "Import the issues from Jira.",
+      },
+      {
+        title: "Sprint Analytics",
+        message: "Show me the Cycle Time and Throughput for this sprint.",
+      },
+      {
+        title: "Monte Carlo Prediction",
+        message: "Predict when we will finish based on our current pace.",
+      },
+      {
+        title: "Identify Risks",
+        message: "What are the biggest risks and blockers in the current sprint?",
+      },
+    ],
+  });
+
+  // Round-trip a synthetic user message + run the agent. Used to ask the
+  // agent to persist optimistic edits via its Notion tools.
+  const injectPrompt = useCallback(
+    (prompt: string) => {
+      if (!agent) return;
+      const id =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `msg-${Date.now()}`;
+      agent.addMessage({ id, role: "user", content: prompt });
+      void copilotkit.runAgent({ agent }).catch((error: unknown) => {
+        console.error("injectPrompt: runAgent failed", error);
+        let hint: string | undefined;
+        if (error && typeof error === "object") {
+          const anyErr = error as Record<string, unknown>;
+          if (typeof anyErr.hint === "string") {
+            hint = anyErr.hint;
+          } else if (typeof anyErr.message === "string") {
+            try {
+              const parsed = JSON.parse(anyErr.message);
+              if (parsed && typeof parsed.hint === "string") hint = parsed.hint;
+            } catch {
+              /* not JSON */
+            }
+          }
+        }
+        if (hint) toast.error(hint, { duration: 8000 });
+      });
+    },
+    [agent, copilotkit],
+  );
+
+  // Optimistic write tracking — snapshot per leadId for rollback, plus two
+  // sets of ids for the spinner overlay and the post-write green flash.
+  const [syncingIds, setSyncingIds] = useState<Set<string>>(new Set());
+  const [justSyncedIds, setJustSyncedIds] = useState<Set<string>>(new Set());
+  const snapshotsRef = useRef<Map<string, Lead>>(new Map());
+  const processedToolMsgIds = useRef<Set<string>>(new Set());
+  const justSyncedTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(
+    new Map(),
+  );
+
+  const flashJustSynced = useCallback((id: string) => {
+    setJustSyncedIds((prev) => {
+      if (prev.has(id)) return prev;
+      const next = new Set(prev);
+      next.add(id);
+      return next;
+    });
+    const existing = justSyncedTimers.current.get(id);
+    if (existing) clearTimeout(existing);
+    const t = setTimeout(() => {
+      setJustSyncedIds((prev) => {
+        if (!prev.has(id)) return prev;
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      justSyncedTimers.current.delete(id);
+    }, 800);
+    justSyncedTimers.current.set(id, t);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      for (const t of justSyncedTimers.current.values()) clearTimeout(t);
+      justSyncedTimers.current.clear();
+    };
+  }, []);
+
+  const state = mergeAgentState(agent?.state);
+
+  const updateState = useCallback(
+    (updater: (prev: AgentState) => AgentState) => {
+      agent?.setState(updater(mergeAgentState(agent?.state)));
+    },
+    [agent],
+  );
+
+  // ----- State-mutator frontend tools ------------------------------------
+
+  useFrontendTool({
+    name: "setHeader",
+    description:
+      "Set the workspace header (title and subtitle shown above the canvas).",
+    parameters: z.object({
+      title: z.string().optional(),
+      subtitle: z.string().optional(),
+    }),
+    handler: async ({ title, subtitle }) => {
+      updateState((prev) => ({
+        ...prev,
+        header: {
+          title: title ?? prev.header.title,
+          subtitle: subtitle ?? prev.header.subtitle,
+        },
+      }));
+      return "header updated";
+    },
+  });
+
+  useFrontendTool({
+    name: "setIssues",
+    description: "Replace the entire issue list. Call this once after fetching from Jira.",
+    parameters: z.object({ issues: z.array(issueShape) }),
+    handler: async ({ issues }) => {
+      const list = issues as Issue[];
+      updateState((prev) => ({
+        ...prev,
+        leads: list,
+        highlightedIssueIds: prev.highlightedIssueIds.filter((id) =>
+          list.some((l) => l.id === id),
+        ),
+        selectedIssueId:
+          prev.selectedIssueId &&
+          list.some((l) => l.id === prev.selectedIssueId)
+            ? prev.selectedIssueId
+            : null,
+      }));
+      return `loaded ${issues.length} issues`;
+    },
+  });
+
+  useFrontendTool({
+    name: "setSyncMeta",
+    description:
+      "Record which Notion database is the canvas's source of truth and when we last synced.",
+    parameters: z.object({
+      databaseId: z.string().optional(),
+      databaseTitle: z.string().optional(),
+      syncedAt: z.string().optional(),
+    }),
+    handler: async ({ databaseId, databaseTitle, syncedAt }) => {
+      updateState((prev) => ({
+        ...prev,
+        sync: {
+          databaseId: databaseId ?? prev.sync.databaseId,
+          databaseTitle: databaseTitle ?? prev.sync.databaseTitle,
+          syncedAt: syncedAt ?? new Date().toISOString(),
+        },
+      }));
+      return "sync meta updated";
+    },
+  });
+
+  useFrontendTool({
+    name: "setFilter",
+    description:
+      "Narrow the visible leads. Pass any subset of fields; omitted fields are kept.",
+    parameters: z.object({
+      workshops: z.array(z.string()).optional(),
+      technical_levels: z.array(z.string()).optional(),
+      tools: z.array(z.string()).optional(),
+      opt_in: z.enum(["any", "yes", "no"]).optional(),
+      search: z.string().optional(),
+    }),
+    handler: async (patch) => {
+      updateState((prev) => ({
+        ...prev,
+        filter: { ...prev.filter, ...(patch as Partial<LeadFilter>) },
+      }));
+      return "filter updated";
+    },
+  });
+
+  useFrontendTool({
+    name: "clearFilters",
+    description: "Reset all filters to show every loaded lead.",
+    parameters: z.object({}),
+    handler: async () => {
+      updateState((prev) => ({ ...prev, filter: emptyFilter }));
+      return "filters cleared";
+    },
+  });
+
+  useFrontendTool({
+    name: "highlightIssues",
+    description:
+      "Visually highlight specific issues. Pass an empty array to clear highlights.",
+    parameters: z.object({ issueIds: z.array(z.string()) }),
+    handler: async ({ issueIds }) => {
+      updateState((prev) => ({ ...prev, highlightedIssueIds: issueIds }));
+      return `highlighted ${issueIds.length} issues`;
+    },
+  });
+
+  useFrontendTool({
+    name: "selectIssue",
+    description: "Open the detail panel for one issue. Pass null to deselect.",
+    parameters: z.object({ issueId: z.string().nullable() }),
+    handler: async ({ issueId }) => {
+      updateState((prev) => ({ ...prev, selectedIssueId: issueId }));
+      return issueId ? `selected ${issueId}` : "selection cleared";
+    },
+  });
+
+  // Optimistic write: snapshot → apply patch → ask agent to persist.
+  // The ToolMessage observer below resolves or reverts.
+  const commitIssueEdit = useCallback(
+    (issueId: string, patch: Partial<Issue>) => {
+      const snap = mergeAgentState(agent?.state).leads.find(
+        (l) => l.id === issueId,
+      );
+      if (!snap) return;
+      snapshotsRef.current.set(issueId, snap);
+      setSyncingIds((prev) => {
+        if (prev.has(issueId)) return prev;
+        const next = new Set(prev);
+        next.add(issueId);
+        return next;
+      });
+      updateState((prev) => applyPatch(prev, issueId, patch));
+      injectPrompt(`Update issue ${issueId} in Jira: ${JSON.stringify(patch)}`);
+    },
+    [agent, updateState, injectPrompt],
+  );
+
+  useFrontendTool({
+    name: "commitLeadEdit",
+    description:
+      "Commit an edit to a single lead with optimistic UI. Asks the agent to persist via update_notion_lead. The patch is a partial Lead — only include fields that change.",
+    parameters: z.object({
+      leadId: z.string(),
+      patch: z
+        .object({
+          name: z.string().optional(),
+          company: z.string().optional(),
+          email: z.string().optional(),
+          role: z.string().optional(),
+          phone: z.string().optional(),
+          source: z.string().optional(),
+          technical_level: z.string().optional(),
+          interested_in: z.array(z.string()).optional(),
+          tools: z.array(z.string()).optional(),
+          workshop: z.string().optional(),
+          status: z.string().optional(),
+          opt_in: z.boolean().optional(),
+          message: z.string().optional(),
+        })
+        .passthrough(),
+    }),
+    handler: async ({ leadId, patch }) => {
+      const lead = mergeAgentState(agent?.state).leads.find(
+        (l) => l.id === leadId,
+      );
+      commitLeadEdit(leadId, patch as Partial<Lead>);
+      return `queued: editing ${lead?.name ?? leadId}`;
+    },
+  });
+
+  // Watch the tail of agent.messages for tool replies that confirm or reject
+  // pending optimistic writes. Notion writers reply "Updated " / "Added " on
+  // success, "Update failed" / "Insert failed" on failure.
+  const messageTail =
+    (
+      agent?.messages as Array<{
+        id?: string;
+        role?: string;
+        content?: unknown;
+      }>
+    )?.slice(-10) ?? [];
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!agent || !messageTail.length) return;
+    for (const m of messageTail) {
+      const id = m.id;
+      if (!id || m.role !== "tool") continue;
+      if (processedToolMsgIds.current.has(id)) continue;
+      processedToolMsgIds.current.add(id);
+
+      const content =
+        typeof m.content === "string"
+          ? m.content
+          : Array.isArray(m.content)
+            ? m.content
+                .map((b) =>
+                  typeof b === "string"
+                    ? b
+                    : (b as { text?: string })?.text ?? "",
+                )
+                .join("")
+            : "";
+      if (!content) continue;
+
+      const isFailure =
+        content.startsWith("Update failed") ||
+        content.startsWith("Insert failed");
+      const isSuccess =
+        content.startsWith("Updated ") || content.startsWith("Added ");
+      if (!isFailure && !isSuccess) continue;
+
+      const pending = Array.from(snapshotsRef.current.entries());
+      if (pending.length === 0) continue;
+
+      if (isSuccess) {
+        const [leadId] = pending[pending.length - 1];
+        snapshotsRef.current.delete(leadId);
+        setSyncingIds((prev) => {
+          if (!prev.has(leadId)) return prev;
+          const next = new Set(prev);
+          next.delete(leadId);
+          return next;
+        });
+        flashJustSynced(leadId);
+      } else {
+        const reverted: Lead[] = [];
+        updateState((prev) => {
+          let next = prev;
+          for (const [, snap] of pending) {
+            next = revertPatch(next, snap);
+            reverted.push(snap);
+          }
+          return next;
+        });
+        snapshotsRef.current.clear();
+        setSyncingIds(new Set());
+        toast.error(
+          reverted.length === 1
+            ? `Couldn't sync ${reverted[0].name} to Notion — change reverted.`
+            : `Couldn't sync ${reverted.length} leads to Notion — changes reverted.`,
+          { duration: 5000 },
+        );
+      }
+    }
+  }, [messageTail.map((m) => m.id).join(","), agent, flashJustSynced]);
+
+  // ----- Controlled gen UI: named renderers ------------------------------
+
+  useFrontendTool({
+    name: "renderLeadMiniCard",
+    description:
+      "Render an inline lead-mini-card in the chat when mentioning a specific lead by name. Pass leadId plus as much of name/role/company/email/workshop/technical_level as you have.",
+    parameters: z.object({
+      leadId: z.string(),
+      name: z.string().optional(),
+      role: z.string().optional(),
+      company: z.string().optional(),
+      email: z.string().optional(),
+      workshop: z.string().optional(),
+      technical_level: z.string().optional(),
+    }),
+    render: ({ args }) => (
+      <LeadMiniCard
+        leadId={args.leadId}
+        name={args.name}
+        role={args.role}
+        company={args.company}
+        email={args.email}
+        workshop={args.workshop}
+        technical_level={args.technical_level}
+        onSelect={(id) =>
+          updateState((prev) => ({ ...prev, selectedLeadId: id }))
+        }
+      />
+    ),
+  });
+
+  useFrontendTool({
+    name: "renderWorkshopDemand",
+    description:
+      "Render an inline horizontal bar chart of leads-per-workshop. Reads live agent state, takes no args.",
+    parameters: z.object({}),
+    render: () => <LiveWorkshopDemand />,
+  });
+
+  // HITL email draft. Agent supplies leadId + subject + body. The user can
+  // edit the fields in chat, then click Send — which fires post_lead_comment
+  // through injectPrompt so the agent persists it as a Notion comment.
+  useFrontendTool({
+    name: "renderEmailDraft",
+    description:
+      "Render a human-in-the-loop email draft inline in chat. Use this AFTER finding the lead and BEFORE posting any comment — the user must approve, edit, or discard the draft. On Send, the canvas will round-trip a post_lead_comment call back to the agent. Do NOT call post_lead_comment in the same turn — wait for the user.",
+    parameters: z.object({
+      leadId: z.string(),
+      leadName: z.string().optional(),
+      leadEmail: z.string().optional(),
+      subject: z.string(),
+      body: z.string(),
+    }),
+    render: ({ args }) => {
+      if (!args.leadId || !args.subject || !args.body) {
+        return (
+          <div className="my-2 inline-flex items-center gap-2 rounded-full border border-border bg-card/60 px-2.5 py-1 text-[11px] text-muted-foreground">
+            <span className="size-1.5 animate-pulse rounded-full bg-[#6366f1]" />
+            <span className="font-mono">Drafting email…</span>
+          </div>
+        );
+      }
+      const leadId = args.leadId;
+      return (
+        <EmailDraftCard
+          leadId={leadId}
+          leadName={args.leadName}
+          leadEmail={args.leadEmail}
+          initialSubject={args.subject}
+          initialBody={args.body}
+          onSend={(final) =>
+            injectPrompt(
+              `The user approved the email draft for lead ${leadId}. Post it as a Notion comment by calling post_lead_comment with leadId=${JSON.stringify(leadId)}, subject=${JSON.stringify(final.subject)}, body=${JSON.stringify(final.body)}. Do not modify the wording.`,
+            )
+          }
+          onRegenerate={() =>
+            injectPrompt(
+              `Regenerate the outreach email draft for lead ${leadId} and call renderEmailDraft again with the new version.`,
+            )
+          }
+        />
+      );
+    },
+  });
+
+  // Catch-all: any tool call without a dedicated render lands here. Notion
+  // MCP tools (notion_query_database, etc.) and ad-hoc backend tools surface
+  // as a small CopilotKit-branded card so the user can see what's happening.
+  useDefaultRenderTool({
+    render: ({ name, status, result, parameters }) => (
+      <ToolFallbackCard
+        name={name}
+        status={status}
+        result={result}
+        parameters={parameters}
+      />
+    ),
+  });
+
+  // ----- Render ----------------------------------------------------------
+
+  const visibleLeads = useMemo(
+    () => applyFilter(state.leads, state.filter),
+    [state.leads, state.filter],
+  );
+
+  const handleSelect = (id: string) =>
+    updateState((prev) => ({
+      ...prev,
+      selectedLeadId: prev.selectedLeadId === id ? null : id,
+    }));
+
+  // Drag-drop on the pipeline board moves a lead between status columns,
+  // routed through commitLeadEdit so it persists to Notion.
+  const handleMoveIssue = (
+    issueId: string,
+    _fromStatus: string,
+    toStatus: string,
+  ) => commitIssueEdit(issueId, { status: toStatus });
+
+  const handlePickWorkshop = (w: string) =>
+    updateState((prev) => {
+      const has = prev.filter.workshops.includes(w);
+      return {
+        ...prev,
+        filter: {
+          ...prev.filter,
+          workshops: has
+            ? prev.filter.workshops.filter((x) => x !== w)
+            : [...prev.filter.workshops, w],
+        },
+      };
+    });
+
+  return (
+    <>
+      <main className="flex h-screen flex-col gap-5 overflow-hidden bg-background px-6 py-6">
+        <Header
+          title={state.header.title}
+          subtitle={state.header.subtitle}
+          totalLeads={state.leads.length}
+          visibleLeads={visibleLeads.length}
+          sync={state.sync}
+        />
+
+        {state.view === "analytics" && state.analytics ? (
+          <div className="min-h-0 flex-1 overflow-auto rounded-3xl border border-dashed border-border/40 bg-card/20 backdrop-blur-md p-6 shadow-inner">
+            <AnalyticsDashboard data={state.analytics} />
+          </div>
+        ) : state.leads.length === 0 ? (
+          <div className="flex flex-1 flex-col items-center justify-center rounded-3xl border border-dashed border-border/40 bg-card/20 backdrop-blur-md p-12 text-center shadow-inner">
+            <div className="size-16 bg-[#BEC2FF]/10 rounded-2xl flex items-center justify-center mb-6 border border-[#BEC2FF]/20">
+                <Activity className="size-8 text-[#BEC2FF] animate-pulse" />
+            </div>
+            <p className="max-w-sm text-sm text-muted-foreground leading-relaxed">
+              Welcome to <span className="text-foreground font-bold italic tracking-tighter">PmAgent - Team Pulse</span>. <br/>
+              Ask me to <span className="text-primary font-semibold underline decoration-dotted underline-offset-4">import issues from Jira</span> to start the team pulse analysis.
+            </p>
+          </div>
+        ) : (
+          <>
+            <QuickStats leads={state.leads} />
+            <div className="min-h-0 flex-1 overflow-auto pt-2">
+              <PipelineBoard
+                leads={visibleLeads}
+                selectedLeadId={state.selectedLeadId}
+                highlightedIssueIds={state.highlightedIssueIds}
+                onSelect={handleSelect}
+                onMoveLead={handleMoveIssue}
+                syncingIds={syncingIds}
+                justSyncedIds={justSyncedIds}
+              />
+            </div>
+          </>
+        )}
+      </main>
+
+      <CopilotSidebar
+        defaultOpen
+        width={420}
+        input={{ disclaimer: () => null, className: "pb-6" }}
+      />
+
+      <Toaster
+        position="bottom-right"
+        toastOptions={{
+          classNames: {
+            error: "!bg-rose-50 !text-rose-900 !border !border-rose-200",
+          },
+        }}
+      />
+    </>
+  );
+}
+
+function HomePage() {
+  const [threadId, setThreadId] = useState<string | undefined>(undefined);
+  return (
+    <div className={drawerStyles.layout}>
+      <ThreadsDrawer
+        agentId="default"
+        threadId={threadId}
+        onThreadChange={setThreadId}
+      />
+      <div className={drawerStyles.mainPanel}>
+        <CopilotChatConfigurationProvider agentId="default" threadId={threadId}>
+          <CanvasInner />
+        </CopilotChatConfigurationProvider>
+      </div>
+    </div>
+  );
+}
+
+export default function Page() {
+  return (
+    <ClientOnly>
+      <HomePage />
+    </ClientOnly>
+  );
+}
