@@ -18,6 +18,15 @@
 
 ## Architecture Stack
 
+```mermaid
+graph TD
+    Client[Next.js Frontend Client] -->|CopilotKit Protocol| BFF[Node.js BFF Express Server]
+    Client -->|React State| UI[Tailwind + Recharts UI]
+    BFF -->|Remote Graph Invocation| Agent[Python LangGraph Server]
+    Agent -->|REST HTTP| Jira[Atlassian Jira Cloud API]
+    Agent -.->|Generative UI State Mutation| Client
+```
+
 ### Backend / Intelligence
 - **LangGraph Deep Agents (Python):** Orchestrates the data fetching, mathematical modeling (Monte Carlo, percentiles), and state mutation.
 - **Gemini 3.1 Flash-Lite:** The cognitive engine driving the agent's analysis and natural language generation.
@@ -27,6 +36,25 @@
 - **Next.js (App Router):** Fast, server-rendered React application.
 - **CopilotKit:** Bridges the LangGraph backend to the React frontend, handling state synchronization, tool-call streaming, and UI component rendering (`<AnalyticsDashboard />`).
 - **Recharts & TailwindCSS:** Used to build the expansive, data-dense "Team Analytics & Flow Metrics" view in the main canvas.
+
+### Flow Analytics Execution
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant F as Next.js UI
+    participant A as LangGraph Agent
+    participant J as Jira API
+
+    U->>F: "Show me sprint bottlenecks"
+    F->>A: Send prompt via CopilotKit
+    A->>J: Fetch active issues & changelogs
+    J-->>A: Return JSON historical data
+    A->>A: Calculate Cycle Time & E85/E90 Throughput
+    A->>A: Run Monte Carlo Simulation
+    A->>F: Mutate global state (view="analytics")
+    F->>U: Render interactive Recharts dashboard
+```
 
 ---
 
